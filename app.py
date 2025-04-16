@@ -76,7 +76,7 @@ calculate_button = st.sidebar.button("Calculate Allocation", type="primary")
 st.header("Asset Selection")
 
 # Create tabs for different asset types in the main area
-asset_tabs = st.tabs(["ETFs", "European Stocks", "US Stocks"])
+asset_tabs = st.tabs(["ETFs", "European Stocks", "US Stocks", "Custom Tickers"])
 
 # ETF selection
 with asset_tabs[0]:
@@ -117,8 +117,70 @@ with asset_tabs[2]:
         if cols[col_idx].checkbox(f"{ticker} - {TICKER_DESCRIPTIONS[ticker]}", value=True, key=f"us_{ticker}"):
             selected_us_stocks.append(ticker)
 
+# Custom ticker selection
+with asset_tabs[3]:
+    st.subheader("➕ Add Custom Tickers")
+    
+    # Initialize session state for custom tickers if not exists
+    if 'custom_tickers' not in st.session_state:
+        st.session_state.custom_tickers = []
+        st.session_state.custom_ticker_types = {}
+        st.session_state.custom_ticker_descriptions = {}
+    
+    # Input for new ticker
+    col1, col2, col3 = st.columns([2, 2, 1])
+    
+    new_ticker = col1.text_input("Ticker Symbol (e.g., AAPL, MSFT.US)", key="new_ticker_input")
+    ticker_type = col2.selectbox(
+        "Asset Type", 
+        ["ETF", "European Stock", "US Stock"],
+        key="new_ticker_type"
+    )
+    ticker_description = col1.text_input("Description (optional)", key="new_ticker_description")
+    
+    # Add button
+    if col3.button("Add Ticker", key="add_ticker_button"):
+        if new_ticker and new_ticker not in st.session_state.custom_tickers and new_ticker not in ETF_TICKERS + EU_STOCK_TICKERS + US_STOCK_TICKERS:
+            st.session_state.custom_tickers.append(new_ticker)
+            st.session_state.custom_ticker_types[new_ticker] = ticker_type
+            st.session_state.custom_ticker_descriptions[new_ticker] = ticker_description or f"Custom {ticker_type}"
+            st.success(f"Added {new_ticker} as {ticker_type}")
+        elif not new_ticker:
+            st.error("Please enter a ticker symbol")
+        elif new_ticker in st.session_state.custom_tickers or new_ticker in ETF_TICKERS + EU_STOCK_TICKERS + US_STOCK_TICKERS:
+            st.error(f"Ticker {new_ticker} already exists")
+    
+    # Display and select custom tickers
+    if st.session_state.custom_tickers:
+        st.subheader("Your Custom Tickers")
+        
+        # Create columns for better layout
+        cols = st.columns(3)
+        selected_custom_tickers = []
+        
+        for i, ticker in enumerate(st.session_state.custom_tickers):
+            col_idx = i % 3
+            description = st.session_state.custom_ticker_descriptions.get(ticker, "")
+            ticker_display = f"{ticker} - {description}" if description else ticker
+            
+            if cols[col_idx].checkbox(ticker_display, value=True, key=f"custom_{ticker}"):
+                selected_custom_tickers.append(ticker)
+            
+            # Add a remove button for each custom ticker
+            if cols[col_idx].button("Remove", key=f"remove_{ticker}"):
+                st.session_state.custom_tickers.remove(ticker)
+                if ticker in st.session_state.custom_ticker_types:
+                    del st.session_state.custom_ticker_types[ticker]
+                if ticker in st.session_state.custom_ticker_descriptions:
+                    del st.session_state.custom_ticker_descriptions[ticker]
+                st.experimental_rerun()
+    else:
+        st.info("No custom tickers added yet. Add tickers above.")
+
 # Combine all selected tickers
 all_selected_tickers = selected_etfs + selected_eu_stocks + selected_us_stocks
+if 'selected_custom_tickers' in locals():
+    all_selected_tickers += selected_custom_tickers
 
 # Manual weight input if selected
 manual_weights = {}
@@ -133,7 +195,7 @@ if allocation_strategy == "Manual Weights" and all_selected_tickers:
     for i, ticker in enumerate(all_selected_tickers):
         col_idx = i % 3
         weight = weight_cols[col_idx].slider(
-            f"{ticker} - {TICKER_DESCRIPTIONS[ticker]}",
+            f"{ticker} - {TICKER_DESCRIPTIONS.get(ticker, st.session_state.custom_ticker_descriptions.get(ticker, ''))}",
             min_value=0.0,
             max_value=100.0,
             value=100.0 / len(all_selected_tickers),
@@ -170,12 +232,28 @@ if calculate_button:
         st.error("Please select at least one asset.")
     else:
         with st.spinner("Calculating allocation..."):
+            # Add custom tickers to the appropriate lists for allocation calculation
+            calculation_etfs = selected_etfs.copy()
+            calculation_eu_stocks = selected_eu_stocks.copy()
+            calculation_us_stocks = selected_us_stocks.copy()
+            
+            # Add custom tickers to the appropriate category
+            if 'selected_custom_tickers' in locals() and selected_custom_tickers:
+                for ticker in selected_custom_tickers:
+                    ticker_type = st.session_state.custom_ticker_types.get(ticker, "ETF")
+                    if ticker_type == "ETF":
+                        calculation_etfs.append(ticker)
+                    elif ticker_type == "European Stock":
+                        calculation_eu_stocks.append(ticker)
+                    elif ticker_type == "US Stock":
+                        calculation_us_stocks.append(ticker)
+            
             if allocation_strategy == "Default Strategy":
                 # Use default strategy
                 allocation_df = allocator.allocate_default_strategy(
-                    selected_etfs,
-                    selected_eu_stocks,
-                    selected_us_stocks,
+                    calculation_etfs,
+                    calculation_eu_stocks,
+                    calculation_us_stocks,
                     initial_investment
                 )
             else:
@@ -190,13 +268,13 @@ if calculate_button:
                 )
             
             # Add asset type information
-            allocation_df['asset_type'] = allocation_df['ticker'].map(
-                lambda x: TICKER_CATEGORIES.get(x, "Cash") if x != "CASH" else "Cash"
+            allocation_df['asset_type'] = allocation_df['ticker'].apply(
+                lambda x: st.session_state.custom_ticker_types.get(x, TICKER_CATEGORIES.get(x, "Cash")) if x != "CASH" else "Cash"
             )
             
             # Add description information
-            allocation_df['description'] = allocation_df['ticker'].map(
-                lambda x: TICKER_DESCRIPTIONS.get(x, "") if x != "CASH" else "Cash (EUR)"
+            allocation_df['description'] = allocation_df['ticker'].apply(
+                lambda x: st.session_state.custom_ticker_descriptions.get(x, TICKER_DESCRIPTIONS.get(x, "")) if x != "CASH" else "Cash (EUR)"
             )
             
             # Store in session state
