@@ -11,9 +11,9 @@ ETF_TICKERS = [
     "MEUD.PA",  # Core STOXX Europe 600 (Euronext Paris)
     "XNKY.DE",  # Nikkei 225 1D JPY (Xetra)
     "XGLE.DE",  # Eurozone Government Bonds (Xetra)
-    "ICOM.UK",  # Diversified Commodity (London)
-    "CBU0.UK",  # USD Treasury Bond 7–10 Yr (London)
-    "DTLA.UK",  # USD Treasury Bond 20+ Yr (London)
+    "ICGM.L",   # Diversified Commodity (London) - Updated ticker
+    "CBUG.L",   # USD Treasury Bond 7–10 Yr (London) - Updated ticker
+    "DTLA.L",   # USD Treasury Bond 20+ Yr (London) - Updated ticker
     "EGLN.L",   # Physical Gold (London)
 ]
 
@@ -41,9 +41,9 @@ TICKER_DESCRIPTIONS = {
     "MEUD.PA": "Core STOXX Europe 600 (Euronext Paris)",
     "XNKY.DE": "Nikkei 225 1D JPY (Xetra)",
     "XGLE.DE": "Eurozone Government Bonds (Xetra)",
-    "ICOM.UK": "Diversified Commodity (London)",
-    "CBU0.UK": "USD Treasury Bond 7–10 Yr (London)",
-    "DTLA.UK": "USD Treasury Bond 20+ Yr (London)",
+    "ICGM.L": "Diversified Commodity (London)",
+    "CBUG.L": "USD Treasury Bond 7–10 Yr (London)",
+    "DTLA.L": "USD Treasury Bond 20+ Yr (London)",
     "EGLN.L": "Physical Gold (London)",
     "SIE.DE": "Siemens (Xetra)",
     "SU.PA": "Schneider Electric (Euronext Paris)",

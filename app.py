@@ -55,6 +55,14 @@ initial_investment = st.sidebar.number_input(
     format="%.2f"
 )
 
+# Actions section (moved above allocation strategy)
+st.sidebar.subheader("Actions")
+
+# Action buttons in vertical layout, one after another
+load_sample_button = st.sidebar.button("Load Sample Data")
+update_data_button = st.sidebar.button("Update Market Data")
+calculate_button = st.sidebar.button("Calculate Allocation", type="primary")
+
 # Allocation strategy selection
 st.sidebar.subheader("Allocation Strategy")
 allocation_strategy = st.sidebar.radio(
@@ -62,15 +70,6 @@ allocation_strategy = st.sidebar.radio(
     ["Default Strategy", "Manual Weights"],
     index=0
 )
-
-# Data management buttons
-st.sidebar.subheader("Data Management")
-data_col1, data_col2 = st.sidebar.columns(2)
-update_data_button = data_col1.button("Update Market Data")
-load_sample_button = data_col2.button("Load Sample Data")
-
-# Calculate button
-calculate_button = st.sidebar.button("Calculate Allocation", type="primary")
 
 # Main content area - Asset Selection
 st.header("Asset Selection")
