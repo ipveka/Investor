@@ -172,7 +172,7 @@ with asset_tabs[3]:
                     del st.session_state.custom_ticker_types[ticker]
                 if ticker in st.session_state.custom_ticker_descriptions:
                     del st.session_state.custom_ticker_descriptions[ticker]
-                st.experimental_rerun()
+                st.rerun()
     else:
         st.info("No custom tickers added yet. Add tickers above.")
 

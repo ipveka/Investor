@@ -58,7 +58,7 @@ class MarketData:
                 try:
                     info = stock.info
                     currency = info.get('currency', 'Unknown')
-                except:
+                except Exception:
                     currency = 'Unknown'
                 
                 price_data.loc[ticker] = [price, currency, datetime.now().strftime('%Y-%m-%d %H:%M:%S')]
@@ -74,7 +74,7 @@ class MarketData:
                             price_data.loc[ticker] = old_data.loc[ticker]
                             print(f"Using cached data for {ticker}")
                             continue
-                    except:
+                    except Exception:
                         pass
                 
                 price_data.loc[ticker] = [np.nan, 'Unknown', datetime.now().strftime('%Y-%m-%d %H:%M:%S')]
@@ -126,7 +126,7 @@ class MarketData:
                             market_cap_data.loc[ticker] = old_data.loc[ticker]
                             print(f"Using cached data for {ticker}")
                             continue
-                    except:
+                    except Exception:
                         pass
                 
                 market_cap_data.loc[ticker] = [np.nan, 'Unknown', datetime.now().strftime('%Y-%m-%d %H:%M:%S')]
@@ -158,9 +158,9 @@ class MarketData:
         price_data.loc["MEUD.PA"] = [95.60, "EUR", datetime.now().strftime('%Y-%m-%d %H:%M:%S')]
         price_data.loc["XNKY.DE"] = [180.40, "EUR", datetime.now().strftime('%Y-%m-%d %H:%M:%S')]
         price_data.loc["XGLE.DE"] = [110.30, "EUR", datetime.now().strftime('%Y-%m-%d %H:%M:%S')]
-        price_data.loc["ICOM.UK"] = [22.15, "GBP", datetime.now().strftime('%Y-%m-%d %H:%M:%S')]
-        price_data.loc["CBU0.UK"] = [18.75, "GBP", datetime.now().strftime('%Y-%m-%d %H:%M:%S')]
-        price_data.loc["DTLA.UK"] = [15.20, "GBP", datetime.now().strftime('%Y-%m-%d %H:%M:%S')]
+        price_data.loc["ICGM.L"] = [22.15, "GBP", datetime.now().strftime('%Y-%m-%d %H:%M:%S')]
+        price_data.loc["CBUG.L"] = [18.75, "GBP", datetime.now().strftime('%Y-%m-%d %H:%M:%S')]
+        price_data.loc["DTLA.L"] = [15.20, "GBP", datetime.now().strftime('%Y-%m-%d %H:%M:%S')]
         price_data.loc["EGLN.L"] = [150.80, "GBP", datetime.now().strftime('%Y-%m-%d %H:%M:%S')]
         
         # European stocks
@@ -187,9 +187,9 @@ class MarketData:
         market_cap_data.loc["MEUD.PA"] = [np.nan, "EUR", datetime.now().strftime('%Y-%m-%d %H:%M:%S')]
         market_cap_data.loc["XNKY.DE"] = [np.nan, "EUR", datetime.now().strftime('%Y-%m-%d %H:%M:%S')]
         market_cap_data.loc["XGLE.DE"] = [np.nan, "EUR", datetime.now().strftime('%Y-%m-%d %H:%M:%S')]
-        market_cap_data.loc["ICOM.UK"] = [np.nan, "GBP", datetime.now().strftime('%Y-%m-%d %H:%M:%S')]
-        market_cap_data.loc["CBU0.UK"] = [np.nan, "GBP", datetime.now().strftime('%Y-%m-%d %H:%M:%S')]
-        market_cap_data.loc["DTLA.UK"] = [np.nan, "GBP", datetime.now().strftime('%Y-%m-%d %H:%M:%S')]
+        market_cap_data.loc["ICGM.L"] = [np.nan, "GBP", datetime.now().strftime('%Y-%m-%d %H:%M:%S')]
+        market_cap_data.loc["CBUG.L"] = [np.nan, "GBP", datetime.now().strftime('%Y-%m-%d %H:%M:%S')]
+        market_cap_data.loc["DTLA.L"] = [np.nan, "GBP", datetime.now().strftime('%Y-%m-%d %H:%M:%S')]
         market_cap_data.loc["EGLN.L"] = [np.nan, "GBP", datetime.now().strftime('%Y-%m-%d %H:%M:%S')]
         
         # European stocks
