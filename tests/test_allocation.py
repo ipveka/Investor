@@ -131,4 +131,126 @@ def test_custom_allocation_normalises_weights(allocator):
 
 def test_custom_allocation_returns_expected_columns(allocator):
     df = allocator.allocate_custom(["ETF1"], [1.0], 1_000)
-    assert list(df.columns) == ["ticker", "weight", "amount", "shares", "price", "market_cap"]
+    assert list(df.columns) == [
+        "ticker", "weight", "amount", "shares",
+        "price", "raw_price", "currency", "fx_rate",
+        "market_cap",
+    ]
+
+
+# -----------------------------------------------------------------------------
+# FX-aware allocation
+# -----------------------------------------------------------------------------
+
+
+class MultiCurrencyMarketData:
+    """Like FakeMarketData but each ticker has its own native currency."""
+
+    def __init__(self, prices, market_caps, currencies):
+        self._prices = prices
+        self._market_caps = market_caps
+        self._currencies = currencies
+
+    def get_current_price(self, tickers):
+        rows = {
+            t: [self._prices.get(t, np.nan), self._currencies.get(t, "Unknown")]
+            for t in tickers
+        }
+        return pd.DataFrame.from_dict(rows, orient="index", columns=["price", "currency"])
+
+    def get_market_cap(self, tickers):
+        rows = {
+            t: [self._market_caps.get(t, np.nan), self._currencies.get(t, "Unknown")]
+            for t in tickers
+        }
+        return pd.DataFrame.from_dict(rows, orient="index", columns=["market_cap", "currency"])
+
+
+class StubFX:
+    """Deterministic FX converter for tests. rates = {(from, to): rate}."""
+
+    def __init__(self, rates):
+        self._rates = rates
+
+    def get_rate(self, from_ccy, to_ccy):
+        if from_ccy == to_ccy or from_ccy in (None, "", "Unknown"):
+            return 1.0
+        if (from_ccy, to_ccy) in self._rates:
+            return self._rates[(from_ccy, to_ccy)]
+        # Default identity if not specified.
+        return 1.0
+
+
+def test_fx_conversion_applied_to_prices():
+    md = MultiCurrencyMarketData(
+        prices={"USA": 100.0, "EUR1": 50.0},
+        market_caps={"USA": 1e9, "EUR1": 1e9},
+        currencies={"USA": "USD", "EUR1": "EUR"},
+    )
+    fx = StubFX({("USD", "EUR"): 0.90})
+    allocator = PortfolioAllocator(md, fx_converter=fx, base_currency="EUR")
+
+    df = allocator.allocate_custom(["USA", "EUR1"], [1.0, 1.0], 10_000)
+
+    usa = df[df["ticker"] == "USA"].iloc[0]
+    eur1 = df[df["ticker"] == "EUR1"].iloc[0]
+    # USA price converted: 100 USD * 0.9 = 90 EUR; 50% of 10000 = 5000;
+    # shares = floor(5000/90) = 55; amount = 55 * 90 = 4950 EUR.
+    assert usa["fx_rate"] == pytest.approx(0.90)
+    assert usa["raw_price"] == pytest.approx(100.0)
+    assert usa["price"] == pytest.approx(90.0)
+    assert usa["shares"] == 55
+    assert usa["amount"] == pytest.approx(4_950)
+    # EUR1 untouched: 50% of 10000 = 5000; shares = floor(5000/50) = 100.
+    assert eur1["fx_rate"] == pytest.approx(1.0)
+    assert eur1["shares"] == 100
+    assert eur1["amount"] == pytest.approx(5_000)
+
+
+def test_fx_conversion_applied_to_market_cap_weighting():
+    """Two stocks with equal market cap in their native currencies but different
+    currencies should *not* weight equally in the base currency."""
+    md = MultiCurrencyMarketData(
+        prices={"USA": 10.0, "EUR1": 10.0},
+        market_caps={"USA": 1e9, "EUR1": 1e9},  # 1B USD and 1B EUR
+        currencies={"USA": "USD", "EUR1": "EUR"},
+    )
+    fx = StubFX({("USD", "EUR"): 0.90})
+    allocator = PortfolioAllocator(md, fx_converter=fx, base_currency="EUR")
+
+    df = allocator.allocate_default_strategy([], ["USA", "EUR1"], [], 1_000_000)
+
+    # In EUR terms, EUR1 = 1B, USA = 0.9B; EU pool total = 1.9B; 40% pool share.
+    usa_w = df[df["ticker"] == "USA"]["weight"].iloc[0]
+    eur1_w = df[df["ticker"] == "EUR1"]["weight"].iloc[0]
+    assert eur1_w > usa_w
+    assert usa_w == pytest.approx(0.40 * 0.9 / 1.9)
+    assert eur1_w == pytest.approx(0.40 * 1.0 / 1.9)
+
+
+def test_no_fx_converter_yields_identity_rate():
+    md = MultiCurrencyMarketData(
+        prices={"X": 100.0},
+        market_caps={"X": 1e9},
+        currencies={"X": "USD"},
+    )
+    allocator = PortfolioAllocator(md, fx_converter=None, base_currency="EUR")
+    df = allocator.allocate_custom(["X"], [1.0], 1_000)
+    row = df[df["ticker"] == "X"].iloc[0]
+    assert row["fx_rate"] == 1.0
+    assert row["price"] == pytest.approx(row["raw_price"])
+
+
+def test_cash_row_carries_base_currency():
+    md = MultiCurrencyMarketData(
+        prices={"X": 100.0},
+        market_caps={"X": np.nan},
+        currencies={"X": "USD"},
+    )
+    fx = StubFX({("USD", "EUR"): 0.90})
+    allocator = PortfolioAllocator(md, fx_converter=fx, base_currency="EUR")
+    df = allocator.allocate_custom(["X"], [1.0], 1_000)
+    cash = df[df["ticker"] == "CASH"]
+    if not cash.empty:
+        assert cash["currency"].iloc[0] == "EUR"
+        assert cash["fx_rate"].iloc[0] == 1.0

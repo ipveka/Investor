@@ -7,6 +7,7 @@ from datetime import datetime
 
 # Import our custom modules
 from data.market_data import MarketData
+from data.fx import FXConverter, SUPPORTED_BASE_CURRENCIES, currency_symbol
 from portfolio.allocation import PortfolioAllocator
 from portfolio.persistence import PortfolioStore
 from portfolio import risk
@@ -29,12 +30,13 @@ st.set_page_config(
 @st.cache_resource
 def load_resources():
     market_data = MarketData()
-    allocator = PortfolioAllocator(market_data)
+    fx_converter = FXConverter()
+    allocator = PortfolioAllocator(market_data, fx_converter=fx_converter)
     visualizer = PortfolioVisualizer()
     store = PortfolioStore()
-    return market_data, allocator, visualizer, store
+    return market_data, fx_converter, allocator, visualizer, store
 
-market_data, allocator, visualizer, store = load_resources()
+market_data, fx_converter, allocator, visualizer, store = load_resources()
 
 
 @st.cache_data(ttl=3600, show_spinner=False)
@@ -54,9 +56,18 @@ This app helps you build and manage your investment portfolio. You can:
 # Sidebar for inputs
 st.sidebar.header("Portfolio Settings")
 
+# Base currency selector. Everything below is denominated in this currency;
+# prices and market caps fetched in other currencies are converted via spot FX.
+base_currency = st.sidebar.selectbox(
+    "Base Currency", SUPPORTED_BASE_CURRENCIES, index=0,
+    help="All totals are expressed in this currency. Native prices are still shown alongside.",
+)
+allocator.base_currency = base_currency
+sym = currency_symbol(base_currency)
+
 # Initial investment input
 initial_investment = st.sidebar.number_input(
-    "Initial Investment (€)",
+    f"Initial Investment ({sym})",
     min_value=1000.0,
     max_value=10000000.0,
     value=10000.0,
@@ -91,7 +102,7 @@ else:
     if selected_snapshot:
         meta = snapshots_df[snapshots_df["name"] == selected_snapshot].iloc[0]
         st.sidebar.caption(
-            f"Saved {meta['created_at']} | €{meta['initial_investment']:,.0f} | {meta['strategy']}"
+            f"Saved {meta['created_at']} | {meta['initial_investment']:,.0f} | {meta['strategy']}"
         )
     load_col, del_col = st.sidebar.columns(2)
     if load_col.button("Load", key="load_snapshot_button"):
@@ -249,6 +260,11 @@ if allocation_strategy == "Manual Weights" and all_selected_tickers:
 if update_data_button:
     with st.spinner("Updating market data..."):
         market_data.update_data(ETF_TICKERS + EU_STOCK_TICKERS + US_STOCK_TICKERS)
+        fx_converter._cache.clear()
+        try:
+            os.remove(fx_converter.cache_file)
+        except OSError:
+            pass
     cached_history.clear()
     st.success("Market data updated successfully!")
 
@@ -326,27 +342,41 @@ if st.session_state.portfolio_allocation is not None:
 
     col1, col2, col3 = st.columns(3)
     with col1:
-        st.metric("Total Investment", f"€{displayed_investment:,.2f}")
+        st.metric("Total Investment", f"{sym}{displayed_investment:,.2f}")
     with col2:
-        st.metric("Allocated Amount", f"€{allocated_amount:,.2f}")
+        st.metric("Allocated Amount", f"{sym}{allocated_amount:,.2f}")
     with col3:
-        st.metric("Cash", f"€{cash_amount:,.2f}")
-    
+        st.metric("Cash", f"{sym}{cash_amount:,.2f}")
+
     # Display allocation table
     st.subheader("Allocation Details")
-    
-    # Format the allocation table for display
+
+    # Format the allocation table for display. Prices and market caps are
+    # already converted to the base currency; raw_price is shown next to it.
     display_df = allocation_df.copy()
+    if 'raw_price' not in display_df.columns:
+        display_df['raw_price'] = display_df['price']
+    if 'currency' not in display_df.columns:
+        display_df['currency'] = base_currency
     display_df['weight'] = display_df['weight'].apply(lambda x: f"{x*100:.2f}%")
-    display_df['amount'] = display_df['amount'].apply(lambda x: f"€{x:,.2f}")
-    display_df['price'] = display_df['price'].apply(lambda x: f"€{x:,.2f}" if not pd.isna(x) else "N/A")
-    display_df['market_cap'] = display_df['market_cap'].apply(
-        lambda x: f"€{x/1e9:,.2f}B" if not pd.isna(x) and x > 0 else "N/A"
+    display_df['amount'] = display_df['amount'].apply(lambda x: f"{sym}{x:,.2f}")
+    display_df['price'] = display_df['price'].apply(
+        lambda x: f"{sym}{x:,.2f}" if not pd.isna(x) else "N/A"
     )
-    
-    # Reorder columns for better display
-    display_df = display_df[['ticker', 'description', 'asset_type', 'weight', 'amount', 'shares', 'price', 'market_cap']]
-    display_df.columns = ['Ticker', 'Description', 'Asset Type', 'Weight', 'Amount', 'Shares', 'Price', 'Market Cap']
+    display_df['native_price'] = display_df.apply(
+        lambda row: f"{currency_symbol(row['currency'])}{row['raw_price']:,.2f}"
+        if not pd.isna(row['raw_price']) else "N/A",
+        axis=1,
+    )
+    display_df['market_cap'] = display_df['market_cap'].apply(
+        lambda x: f"{sym}{x/1e9:,.2f}B" if not pd.isna(x) and x > 0 else "N/A"
+    )
+
+    display_df = display_df[['ticker', 'description', 'asset_type', 'weight',
+                             'amount', 'shares', 'price', 'native_price', 'market_cap']]
+    display_df.columns = ['Ticker', 'Description', 'Asset Type', 'Weight',
+                          'Amount', 'Shares', f'Price ({base_currency})', 'Native Price',
+                          f'Market Cap ({base_currency})']
     
     st.dataframe(display_df, use_container_width=True)
     

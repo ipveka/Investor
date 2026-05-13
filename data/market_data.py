@@ -150,7 +150,61 @@ class MarketData:
         print(f"Updating market data for {len(tickers)} tickers...")
         self.get_current_price(tickers, force_update=True)
         self.get_market_cap(tickers, force_update=True)
+        self.get_currencies(tickers, force_update=True)
         return True
+
+    def get_currencies(self, tickers, force_update=False):
+        """Return {ticker: currency} using a long-lived per-ticker cache.
+
+        Currency rarely changes, so a single yfinance fast_info lookup per ticker
+        is reused across sessions. Unknown tickers map to 'Unknown'.
+        """
+        currency_cache_file = os.path.join(self.cache_dir, "currency_data.csv")
+        cached = {}
+        if not force_update and os.path.exists(currency_cache_file):
+            try:
+                df = pd.read_csv(currency_cache_file, index_col=0)
+                cached = df["currency"].to_dict()
+            except Exception:
+                cached = {}
+
+        result = {}
+        missing = []
+        for ticker in tickers:
+            value = cached.get(ticker)
+            if not force_update and value and value not in ("Unknown", "nan"):
+                result[ticker] = value
+            else:
+                missing.append(ticker)
+
+        if missing:
+            for ticker in missing:
+                ccy = self._fetch_currency(ticker)
+                result[ticker] = ccy
+                cached[ticker] = ccy
+            pd.DataFrame.from_dict(cached, orient="index", columns=["currency"]).to_csv(
+                currency_cache_file
+            )
+
+        return result
+
+    def _fetch_currency(self, ticker):
+        try:
+            stock = yf.Ticker(ticker)
+            fast = getattr(stock, "fast_info", None)
+            if fast is not None:
+                ccy = None
+                try:
+                    ccy = fast["currency"] if "currency" in fast else None
+                except Exception:
+                    ccy = getattr(fast, "currency", None)
+                if ccy:
+                    return str(ccy).upper()
+            info = stock.info or {}
+            return str(info.get("currency", "Unknown") or "Unknown").upper()
+        except Exception as e:
+            print(f"Currency lookup failed for {ticker}: {e}")
+            return "Unknown"
         
     def load_sample_data(self):
         """
