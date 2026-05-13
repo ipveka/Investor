@@ -154,5 +154,28 @@ class PortfolioVisualizer:
                 barmode='group',
                 margin=dict(t=50, b=50, l=10, r=10)
             )
-            
+
             return fig
+
+    def create_correlation_heatmap(self, correlation_df):
+        """Plotly heatmap of a correlation matrix."""
+        if correlation_df is None or correlation_df.empty:
+            fig = go.Figure()
+            fig.update_layout(
+                title='Correlation Matrix (not enough data)',
+                margin=dict(t=50, b=50, l=10, r=10),
+            )
+            return fig
+
+        fig = px.imshow(
+            correlation_df,
+            x=correlation_df.columns,
+            y=correlation_df.index,
+            color_continuous_scale='RdBu_r',
+            zmin=-1,
+            zmax=1,
+            aspect='auto',
+            title='Asset Correlation (daily returns)',
+        )
+        fig.update_layout(margin=dict(t=50, b=50, l=10, r=10))
+        return fig

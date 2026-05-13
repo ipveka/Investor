@@ -172,3 +172,8 @@ cython_debug/
 
 # PyPI configuration file
 .pypirc
+
+# Investor-specific runtime artifacts
+data/portfolios.db
+data/cache/
+.DS_Store

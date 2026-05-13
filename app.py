@@ -8,6 +8,8 @@ from datetime import datetime
 # Import our custom modules
 from data.market_data import MarketData
 from portfolio.allocation import PortfolioAllocator
+from portfolio.persistence import PortfolioStore
+from portfolio import risk
 from visualization.plots import PortfolioVisualizer
 from config import (
     ETF_TICKERS, EU_STOCK_TICKERS, US_STOCK_TICKERS,
@@ -29,9 +31,16 @@ def load_resources():
     market_data = MarketData()
     allocator = PortfolioAllocator(market_data)
     visualizer = PortfolioVisualizer()
-    return market_data, allocator, visualizer
+    store = PortfolioStore()
+    return market_data, allocator, visualizer, store
 
-market_data, allocator, visualizer = load_resources()
+market_data, allocator, visualizer, store = load_resources()
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def cached_history(tickers, period):
+    """Cache yfinance history per (tickers, period) for one hour."""
+    return risk.fetch_history(list(tickers), period=period)
 
 # App title and description
 st.title("Portfolio Builder 📈")
@@ -70,6 +79,32 @@ allocation_strategy = st.sidebar.radio(
     ["Default Strategy", "Manual Weights"],
     index=0
 )
+
+# Saved portfolios (sidebar)
+st.sidebar.subheader("Saved Portfolios")
+snapshots_df = store.list_snapshots()
+if snapshots_df.empty:
+    st.sidebar.caption("No saved portfolios yet. Save one after calculating an allocation.")
+else:
+    snapshot_names = snapshots_df["name"].tolist()
+    selected_snapshot = st.sidebar.selectbox("Load snapshot", snapshot_names, key="snapshot_selector")
+    if selected_snapshot:
+        meta = snapshots_df[snapshots_df["name"] == selected_snapshot].iloc[0]
+        st.sidebar.caption(
+            f"Saved {meta['created_at']} | €{meta['initial_investment']:,.0f} | {meta['strategy']}"
+        )
+    load_col, del_col = st.sidebar.columns(2)
+    if load_col.button("Load", key="load_snapshot_button"):
+        loaded_df, loaded_investment, loaded_strategy, _ = store.load(selected_snapshot)
+        st.session_state.portfolio_allocation = loaded_df
+        st.session_state.loaded_snapshot_investment = loaded_investment
+        st.session_state.loaded_snapshot_strategy = loaded_strategy
+        st.sidebar.success(f"Loaded '{selected_snapshot}'")
+        st.rerun()
+    if del_col.button("Delete", key="delete_snapshot_button"):
+        store.delete(selected_snapshot)
+        st.sidebar.success(f"Deleted '{selected_snapshot}'")
+        st.rerun()
 
 # Main content area - Asset Selection
 st.header("Asset Selection")
@@ -288,15 +323,22 @@ if st.session_state.portfolio_allocation is not None:
     # Display allocation summary
     st.header("Portfolio Allocation Summary")
     
-    # Create columns for metrics
+    # Derive totals from the allocation itself so the summary stays consistent
+    # whether the data came from a fresh calculation or a loaded snapshot.
+    displayed_investment = allocation_df['amount'].sum()
+    allocated_amount = allocation_df[allocation_df['ticker'] != 'CASH']['amount'].sum()
+    cash_amount = (
+        allocation_df[allocation_df['ticker'] == 'CASH']['amount'].sum()
+        if 'CASH' in allocation_df['ticker'].values
+        else 0
+    )
+
     col1, col2, col3 = st.columns(3)
     with col1:
-        st.metric("Total Investment", f"€{initial_investment:,.2f}")
+        st.metric("Total Investment", f"€{displayed_investment:,.2f}")
     with col2:
-        allocated_amount = allocation_df[allocation_df['ticker'] != 'CASH']['amount'].sum()
         st.metric("Allocated Amount", f"€{allocated_amount:,.2f}")
     with col3:
-        cash_amount = allocation_df[allocation_df['ticker'] == 'CASH']['amount'].sum() if 'CASH' in allocation_df['ticker'].values else 0
         st.metric("Cash", f"€{cash_amount:,.2f}")
     
     # Display allocation table
@@ -318,20 +360,115 @@ if st.session_state.portfolio_allocation is not None:
     st.dataframe(display_df, use_container_width=True)
     
     # Create visualization tabs
-    viz_tabs = st.tabs(["Pie Chart", "Bar Chart", "Weight Chart"])
-    
+    viz_tabs = st.tabs(["Pie Chart", "Bar Chart", "Weight Chart", "Risk Metrics"])
+
     with viz_tabs[0]:
         st.plotly_chart(visualizer.create_allocation_pie_chart(allocation_df), use_container_width=True)
-    
+
     with viz_tabs[1]:
         st.plotly_chart(visualizer.create_allocation_bar_chart(allocation_df), use_container_width=True)
-    
+
     with viz_tabs[2]:
         st.plotly_chart(visualizer.create_weight_chart(allocation_df), use_container_width=True)
-    
-    # Add export functionality
-    st.subheader("Export Portfolio")
-    
+
+    with viz_tabs[3]:
+        st.markdown("Historical volatility, drawdown, Sharpe ratio, and asset correlations.")
+        risk_col1, risk_col2 = st.columns([1, 1])
+        period = risk_col1.selectbox(
+            "History window", ["1y", "3y", "5y"], index=1, key="risk_period"
+        )
+        risk_free_pct = risk_col2.number_input(
+            "Risk-free rate (annual %)", min_value=0.0, max_value=15.0, value=2.0, step=0.25,
+            key="risk_free_pct",
+        )
+        risk_free_rate = risk_free_pct / 100.0
+
+        risk_assets = allocation_df[
+            (allocation_df["ticker"] != "CASH") & (allocation_df["amount"] > 0)
+        ]
+        if risk_assets.empty:
+            st.info("No invested assets to analyze.")
+        else:
+            tickers = tuple(risk_assets["ticker"].tolist())
+            with st.spinner("Fetching historical prices..."):
+                prices = cached_history(tickers, period)
+
+            if prices.empty:
+                st.warning(
+                    "Could not fetch historical price data. Yahoo Finance may be rate-limiting; "
+                    "try again later or switch the period."
+                )
+            else:
+                weights = dict(zip(risk_assets["ticker"], risk_assets["amount"]))
+                portfolio = risk.portfolio_metrics(prices, weights, risk_free_rate)
+
+                m1, m2, m3, m4 = st.columns(4)
+                m1.metric("Total Return",
+                          f"{portfolio['total_return']*100:.2f}%" if not np.isnan(portfolio['total_return']) else "N/A")
+                m2.metric("Volatility (ann.)",
+                          f"{portfolio['volatility']*100:.2f}%" if not np.isnan(portfolio['volatility']) else "N/A")
+                m3.metric("Max Drawdown",
+                          f"{portfolio['max_drawdown']*100:.2f}%" if not np.isnan(portfolio['max_drawdown']) else "N/A")
+                m4.metric("Sharpe Ratio",
+                          f"{portfolio['sharpe']:.2f}" if not np.isnan(portfolio['sharpe']) else "N/A")
+
+                st.subheader("Per-asset metrics")
+                per_ticker = risk.per_ticker_metrics(prices, risk_free_rate)
+                missing = [t for t in tickers if t not in per_ticker.index]
+                if missing:
+                    st.caption(f"No history for: {', '.join(missing)}")
+                if not per_ticker.empty:
+                    display_metrics = per_ticker.copy()
+                    display_metrics["volatility"] = display_metrics["volatility"].apply(
+                        lambda x: f"{x*100:.2f}%" if pd.notna(x) else "N/A"
+                    )
+                    display_metrics["max_drawdown"] = display_metrics["max_drawdown"].apply(
+                        lambda x: f"{x*100:.2f}%" if pd.notna(x) else "N/A"
+                    )
+                    display_metrics["total_return"] = display_metrics["total_return"].apply(
+                        lambda x: f"{x*100:.2f}%" if pd.notna(x) else "N/A"
+                    )
+                    display_metrics["sharpe"] = display_metrics["sharpe"].apply(
+                        lambda x: f"{x:.2f}" if pd.notna(x) else "N/A"
+                    )
+                    display_metrics.columns = ["Volatility", "Max Drawdown", "Sharpe", "Total Return"]
+                    st.dataframe(display_metrics, use_container_width=True)
+
+                st.subheader("Correlation matrix")
+                corr = risk.correlation_matrix(prices)
+                st.plotly_chart(
+                    visualizer.create_correlation_heatmap(corr), use_container_width=True
+                )
+
+    # Save / export
+    st.subheader("Save & Export")
+    save_col1, save_col2 = st.columns([3, 1])
+    snapshot_name = save_col1.text_input(
+        "Snapshot name", key="snapshot_name_input", placeholder="e.g. core-2026-05"
+    )
+    overwrite = save_col2.checkbox("Overwrite", key="snapshot_overwrite")
+    if st.button("Save Portfolio", key="save_snapshot_button"):
+        try:
+            store.save(
+                snapshot_name,
+                allocation_df,
+                initial_investment,
+                allocation_strategy,
+                overwrite=overwrite,
+            )
+            st.success(f"Saved '{snapshot_name.strip()}'")
+            st.rerun()
+        except ValueError as exc:
+            st.error(str(exc))
+        except Exception as exc:
+            if "UNIQUE constraint" in str(exc):
+                st.error(
+                    f"A snapshot named '{snapshot_name.strip()}' already exists. "
+                    "Check 'Overwrite' to replace it."
+                )
+            else:
+                st.error(f"Could not save snapshot: {exc}")
+
     # Create a download button for CSV export
     csv = allocation_df.to_csv(index=False)
     st.download_button(
