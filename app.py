@@ -67,10 +67,10 @@ initial_investment = st.sidebar.number_input(
 # Actions section (moved above allocation strategy)
 st.sidebar.subheader("Actions")
 
-# Action buttons in vertical layout, one after another
+# Action buttons. Allocation is now computed reactively as inputs change;
+# these buttons handle one-shot side effects only.
 load_sample_button = st.sidebar.button("Load Sample Data")
 update_data_button = st.sidebar.button("Update Market Data")
-calculate_button = st.sidebar.button("Calculate Allocation", type="primary")
 
 # Allocation strategy selection
 st.sidebar.subheader("Allocation Strategy")
@@ -249,6 +249,7 @@ if allocation_strategy == "Manual Weights" and all_selected_tickers:
 if update_data_button:
     with st.spinner("Updating market data..."):
         market_data.update_data(ETF_TICKERS + EU_STOCK_TICKERS + US_STOCK_TICKERS)
+    cached_history.clear()
     st.success("Market data updated successfully!")
 
 if load_sample_button:
@@ -260,18 +261,14 @@ if load_sample_button:
 if 'portfolio_allocation' not in st.session_state:
     st.session_state.portfolio_allocation = None
 
-# Calculate allocation when button is clicked
-if calculate_button:
-    if not all_selected_tickers:
-        st.error("Please select at least one asset.")
-    else:
-        with st.spinner("Calculating allocation..."):
-            # Add custom tickers to the appropriate lists for allocation calculation
-            calculation_etfs = selected_etfs.copy()
-            calculation_eu_stocks = selected_eu_stocks.copy()
-            calculation_us_stocks = selected_us_stocks.copy()
-            
-            # Add custom tickers to the appropriate category
+# Reactive computation: rerun on every widget change, store latest result.
+if all_selected_tickers:
+    with st.spinner("Computing allocation..."):
+        try:
+            calculation_etfs = list(selected_etfs)
+            calculation_eu_stocks = list(selected_eu_stocks)
+            calculation_us_stocks = list(selected_us_stocks)
+
             if 'selected_custom_tickers' in locals() and selected_custom_tickers:
                 for ticker in selected_custom_tickers:
                     ticker_type = st.session_state.custom_ticker_types.get(ticker, "ETF")
@@ -281,40 +278,34 @@ if calculate_button:
                         calculation_eu_stocks.append(ticker)
                     elif ticker_type == "US Stock":
                         calculation_us_stocks.append(ticker)
-            
+
             if allocation_strategy == "Default Strategy":
-                # Use default strategy
                 allocation_df = allocator.allocate_default_strategy(
-                    calculation_etfs,
-                    calculation_eu_stocks,
-                    calculation_us_stocks,
-                    initial_investment
+                    calculation_etfs, calculation_eu_stocks, calculation_us_stocks,
+                    initial_investment,
                 )
             else:
-                # Use manual weights
-                normalized_weights = [manual_weights[ticker] for ticker in all_selected_tickers]
-                normalized_weights = np.array(normalized_weights) / sum(normalized_weights)
-                
-                allocation_df = allocator.allocate_custom(
-                    all_selected_tickers,
-                    normalized_weights,
-                    initial_investment
+                normalized_weights = np.array(
+                    [manual_weights[t] for t in all_selected_tickers], dtype=float,
                 )
-            
-            # Add asset type information
+                normalized_weights = normalized_weights / normalized_weights.sum()
+                allocation_df = allocator.allocate_custom(
+                    all_selected_tickers, normalized_weights, initial_investment,
+                )
+
             allocation_df['asset_type'] = allocation_df['ticker'].apply(
-                lambda x: st.session_state.custom_ticker_types.get(x, TICKER_CATEGORIES.get(x, "Cash")) if x != "CASH" else "Cash"
+                lambda x: st.session_state.custom_ticker_types.get(x, TICKER_CATEGORIES.get(x, "Cash"))
+                if x != "CASH" else "Cash"
             )
-            
-            # Add description information
             allocation_df['description'] = allocation_df['ticker'].apply(
-                lambda x: st.session_state.custom_ticker_descriptions.get(x, TICKER_DESCRIPTIONS.get(x, "")) if x != "CASH" else "Cash (EUR)"
+                lambda x: st.session_state.custom_ticker_descriptions.get(x, TICKER_DESCRIPTIONS.get(x, ""))
+                if x != "CASH" else "Cash (EUR)"
             )
-            
-            # Store in session state
             st.session_state.portfolio_allocation = allocation_df
-            
-            st.success("Portfolio allocation calculated successfully!")
+        except Exception as exc:
+            st.error(f"Could not compute allocation: {exc}")
+else:
+    st.session_state.portfolio_allocation = None
 
 # Display portfolio allocation if available
 if st.session_state.portfolio_allocation is not None:
@@ -360,7 +351,7 @@ if st.session_state.portfolio_allocation is not None:
     st.dataframe(display_df, use_container_width=True)
     
     # Create visualization tabs
-    viz_tabs = st.tabs(["Pie Chart", "Bar Chart", "Weight Chart", "Risk Metrics"])
+    viz_tabs = st.tabs(["Pie Chart", "Bar Chart", "Weight Chart", "Risk Metrics", "Backtest"])
 
     with viz_tabs[0]:
         st.plotly_chart(visualizer.create_allocation_pie_chart(allocation_df), use_container_width=True)
@@ -439,6 +430,66 @@ if st.session_state.portfolio_allocation is not None:
                 st.plotly_chart(
                     visualizer.create_correlation_heatmap(corr), use_container_width=True
                 )
+
+    with viz_tabs[4]:
+        st.markdown("How would this allocation have performed historically vs. a benchmark?")
+        bt_col1, bt_col2 = st.columns([1, 1])
+        bt_period = bt_col1.selectbox(
+            "Backtest window", ["1y", "3y", "5y"], index=1, key="bt_period"
+        )
+        benchmark = bt_col2.text_input(
+            "Benchmark ticker", value="SPY", key="bt_benchmark",
+            help="Ticker to compare against (e.g. SPY, URTH, ^GSPC, VWCE.DE)",
+        ).strip()
+
+        bt_assets = allocation_df[
+            (allocation_df["ticker"] != "CASH") & (allocation_df["amount"] > 0)
+        ]
+        if bt_assets.empty:
+            st.info("No invested assets to back-test.")
+        else:
+            bt_tickers = tuple(bt_assets["ticker"].tolist())
+            with st.spinner("Building backtest..."):
+                bt_prices = cached_history(bt_tickers, bt_period)
+                bench_prices = cached_history((benchmark,), bt_period) if benchmark else None
+
+            if bt_prices.empty:
+                st.warning("Could not fetch portfolio history. Try a different window or update market data.")
+            else:
+                weights = dict(zip(bt_assets["ticker"], bt_assets["amount"]))
+                portfolio_path = risk.cumulative_returns(bt_prices, weights)
+                benchmark_path = (
+                    risk.benchmark_cumulative(bench_prices)
+                    if bench_prices is not None and not bench_prices.empty
+                    else pd.Series(dtype=float)
+                )
+
+                if portfolio_path.empty:
+                    st.warning("No overlapping price history for the selected assets.")
+                else:
+                    final_portfolio = float(portfolio_path.iloc[-1] - 1.0)
+                    final_benchmark = (
+                        float(benchmark_path.iloc[-1] - 1.0) if not benchmark_path.empty else None
+                    )
+                    bt_m1, bt_m2, bt_m3 = st.columns(3)
+                    bt_m1.metric("Portfolio return", f"{final_portfolio*100:.2f}%")
+                    if final_benchmark is not None:
+                        bt_m2.metric(f"{benchmark} return", f"{final_benchmark*100:.2f}%")
+                        bt_m3.metric(
+                            "Alpha (port. - bench.)",
+                            f"{(final_portfolio - final_benchmark)*100:.2f}%",
+                        )
+                    elif benchmark:
+                        bt_m2.warning(f"Could not fetch '{benchmark}' history.")
+
+                    st.plotly_chart(
+                        visualizer.create_backtest_chart(
+                            portfolio_path,
+                            benchmark_path if not benchmark_path.empty else None,
+                            benchmark_label=benchmark or "Benchmark",
+                        ),
+                        use_container_width=True,
+                    )
 
     # Save / export
     st.subheader("Save & Export")

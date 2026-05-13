@@ -182,3 +182,29 @@ def correlation_matrix(prices):
         return pd.DataFrame()
     returns = daily_returns(prices)
     return returns.corr()
+
+
+def cumulative_returns(prices, weights):
+    """
+    Cumulative return path for a portfolio, starting at 1.0.
+
+    Returns a Series indexed by date. Empty if prices/weights are empty.
+    """
+    returns = portfolio_returns(prices, weights)
+    if returns.empty:
+        return pd.Series(dtype=float)
+    return (1.0 + returns).cumprod()
+
+
+def benchmark_cumulative(prices):
+    """Cumulative return path of a single-column price frame (or Series)."""
+    if isinstance(prices, pd.DataFrame):
+        if prices.empty:
+            return pd.Series(dtype=float)
+        series = prices.iloc[:, 0]
+    else:
+        series = prices
+    series = series.dropna()
+    if series.empty:
+        return pd.Series(dtype=float)
+    return series / series.iloc[0]

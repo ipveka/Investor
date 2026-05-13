@@ -4,7 +4,6 @@ import numpy as np
 from datetime import datetime
 import os
 import time
-import random
 
 class MarketData:
     def __init__(self, cache_dir='data/cache'):
@@ -14,75 +13,84 @@ class MarketData:
         self.market_cap_cache_file = os.path.join(cache_dir, 'market_cap_data.csv')
         self.price_cache_file = os.path.join(cache_dir, 'price_data.csv')
         
+    def _read_cache(self, path):
+        if not os.path.exists(path):
+            return pd.DataFrame()
+        try:
+            return pd.read_csv(path, index_col=0)
+        except Exception as e:
+            print(f"Error reading cache {path}: {e}")
+            return pd.DataFrame()
+
+    def _batch_fetch_prices(self, tickers):
+        """Fetch latest close for a list of tickers in a single yfinance call."""
+        now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        rows = {t: [np.nan, 'Unknown', now] for t in tickers}
+        try:
+            data = yf.download(
+                tickers=tickers, period='5d', interval='1d',
+                auto_adjust=True, progress=False, threads=True, group_by='column',
+            )
+        except Exception as e:
+            print(f"Batch price fetch failed: {e}")
+            return pd.DataFrame.from_dict(rows, orient='index',
+                                         columns=['price', 'currency', 'last_updated'])
+
+        if data is None or data.empty:
+            return pd.DataFrame.from_dict(rows, orient='index',
+                                         columns=['price', 'currency', 'last_updated'])
+
+        if isinstance(data.columns, pd.MultiIndex):
+            close = data['Close'] if 'Close' in data.columns.get_level_values(0) else None
+        else:
+            close = data[['Close']].rename(columns={'Close': tickers[0]}) \
+                if 'Close' in data.columns else None
+
+        if close is not None:
+            for ticker in tickers:
+                if ticker in close.columns:
+                    series = close[ticker].dropna()
+                    if not series.empty:
+                        rows[ticker] = [float(series.iloc[-1]), 'Unknown', now]
+
+        return pd.DataFrame.from_dict(rows, orient='index',
+                                     columns=['price', 'currency', 'last_updated'])
+
     def get_current_price(self, tickers, force_update=False):
-        """Get the current price for a list of tickers."""
-        if not force_update and os.path.exists(self.price_cache_file):
-            try:
-                price_data = pd.read_csv(self.price_cache_file, index_col=0)
-                # Check if all tickers are in the cache
-                if all(ticker in price_data.index for ticker in tickers):
-                    return price_data
-            except Exception as e:
-                print(f"Error reading price cache: {e}")
-        
-        # Fetch new data
-        price_data = pd.DataFrame(columns=['price', 'currency', 'last_updated'])
-        
-        for ticker in tickers:
-            try:
-                # Add a random delay between requests to avoid rate limiting
-                time.sleep(random.uniform(1.0, 2.0))
-                
-                stock = yf.Ticker(ticker)
-                
-                # Try to get data from history first (more reliable)
-                try:
-                    hist = stock.history(period="1d")
-                    if not hist.empty:
-                        price = hist['Close'].iloc[-1]
-                    else:
-                        raise ValueError("No historical data available")
-                except Exception:
-                    # Fallback to info
-                    info = stock.info
-                    
-                    # Get the current price
-                    if 'regularMarketPrice' in info and info['regularMarketPrice'] is not None:
-                        price = info['regularMarketPrice']
-                    elif 'previousClose' in info and info['previousClose'] is not None:
-                        price = info['previousClose']
-                    else:
-                        price = np.nan
-                
-                # Get the currency
-                try:
-                    info = stock.info
-                    currency = info.get('currency', 'Unknown')
-                except Exception:
-                    currency = 'Unknown'
-                
-                price_data.loc[ticker] = [price, currency, datetime.now().strftime('%Y-%m-%d %H:%M:%S')]
-                print(f"Successfully fetched price for {ticker}: {price} {currency}")
-                
-            except Exception as e:
-                print(f"Error fetching price for {ticker}: {e}")
-                # If we have cached data for this ticker, use it instead of NaN
-                if not force_update and os.path.exists(self.price_cache_file):
-                    try:
-                        old_data = pd.read_csv(self.price_cache_file, index_col=0)
-                        if ticker in old_data.index:
-                            price_data.loc[ticker] = old_data.loc[ticker]
-                            print(f"Using cached data for {ticker}")
-                            continue
-                    except Exception:
-                        pass
-                
-                price_data.loc[ticker] = [np.nan, 'Unknown', datetime.now().strftime('%Y-%m-%d %H:%M:%S')]
-        
-        # Save to cache
-        price_data.to_csv(self.price_cache_file)
-        
-        return price_data
+        """Get the current price for a list of tickers.
+
+        Uses a single batched yfinance call for any tickers missing from the cache
+        (or for all tickers when force_update=True). Falls back to whatever is
+        already cached on disk for tickers the batch fetch could not resolve.
+        """
+        tickers = list(tickers)
+        if not tickers:
+            return pd.DataFrame(columns=['price', 'currency', 'last_updated'])
+
+        cached = self._read_cache(self.price_cache_file)
+        if force_update:
+            missing = tickers
+        else:
+            missing = [t for t in tickers if t not in cached.index]
+
+        if missing:
+            fetched = self._batch_fetch_prices(missing)
+            # Drop any rows we're refreshing, then merge in the new values.
+            if not cached.empty:
+                cached = cached.drop(index=[t for t in missing if t in cached.index], errors='ignore')
+                cached = pd.concat([cached, fetched])
+            else:
+                cached = fetched
+            cached.to_csv(self.price_cache_file)
+
+        now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        out = pd.DataFrame(index=tickers, columns=['price', 'currency', 'last_updated'])
+        for t in tickers:
+            if t in cached.index:
+                out.loc[t] = cached.loc[t]
+            else:
+                out.loc[t] = [np.nan, 'Unknown', now]
+        return out
     
     def get_market_cap(self, tickers, force_update=False):
         """Get the market cap for a list of tickers."""
@@ -100,9 +108,10 @@ class MarketData:
         
         for ticker in tickers:
             try:
-                # Add a random delay between requests to avoid rate limiting
-                time.sleep(random.uniform(1.0, 2.0))
-                
+                # Small courtesy delay between .info calls; yfinance has no batch
+                # endpoint for market cap, but we don't need second-scale sleeps.
+                time.sleep(0.1)
+
                 stock = yf.Ticker(ticker)
                 info = stock.info
                 

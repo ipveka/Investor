@@ -157,6 +157,33 @@ class PortfolioVisualizer:
 
             return fig
 
+    def create_backtest_chart(self, portfolio_series, benchmark_series=None, benchmark_label="Benchmark"):
+        """Cumulative return chart for a portfolio, optionally against a benchmark.
+
+        Both inputs are pandas Series indexed by date, starting near 1.0.
+        """
+        fig = go.Figure()
+        if portfolio_series is not None and not portfolio_series.empty:
+            fig.add_trace(go.Scatter(
+                x=portfolio_series.index, y=portfolio_series.values,
+                mode='lines', name='Portfolio',
+                line=dict(color='rgb(26, 118, 255)', width=2),
+            ))
+        if benchmark_series is not None and not benchmark_series.empty:
+            fig.add_trace(go.Scatter(
+                x=benchmark_series.index, y=benchmark_series.values,
+                mode='lines', name=benchmark_label,
+                line=dict(color='rgb(180, 180, 180)', width=2, dash='dash'),
+            ))
+        fig.update_layout(
+            title='Backtest: cumulative return',
+            xaxis_title='Date',
+            yaxis_title='Growth of €1',
+            margin=dict(t=50, b=50, l=10, r=10),
+            legend=dict(orientation='h', yanchor='bottom', y=-0.25, xanchor='center', x=0.5),
+        )
+        return fig
+
     def create_correlation_heatmap(self, correlation_df):
         """Plotly heatmap of a correlation matrix."""
         if correlation_df is None or correlation_df.empty:

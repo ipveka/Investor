@@ -109,3 +109,36 @@ def test_empty_inputs_return_safe_defaults():
     metrics = risk.portfolio_metrics(empty, {"X": 1})
     assert np.isnan(metrics["volatility"])
     assert risk.correlation_matrix(empty).empty
+
+
+def test_cumulative_returns_starts_near_one(two_asset_prices):
+    path = risk.cumulative_returns(two_asset_prices, {"UP": 0.5, "DOWN": 0.5})
+    assert not path.empty
+    # First point is approximately 1 + first daily return.
+    first_step = (two_asset_prices.pct_change().iloc[1] * pd.Series({"UP": 0.5, "DOWN": 0.5})).sum()
+    assert path.iloc[0] == pytest.approx(1.0 + first_step)
+
+
+def test_cumulative_returns_final_matches_portfolio_metric(two_asset_prices):
+    weights = {"UP": 1.0}
+    path = risk.cumulative_returns(two_asset_prices, weights)
+    metrics = risk.portfolio_metrics(two_asset_prices, weights)
+    assert float(path.iloc[-1] - 1.0) == pytest.approx(metrics["total_return"])
+
+
+def test_cumulative_returns_empty_for_missing_tickers(two_asset_prices):
+    assert risk.cumulative_returns(two_asset_prices, {"MISSING": 1.0}).empty
+
+
+def test_benchmark_cumulative_starts_at_one(two_asset_prices):
+    bench = risk.benchmark_cumulative(two_asset_prices[["UP"]])
+    assert bench.iloc[0] == pytest.approx(1.0)
+    # Last value equals total growth factor of UP.
+    assert bench.iloc[-1] == pytest.approx(
+        two_asset_prices["UP"].iloc[-1] / two_asset_prices["UP"].iloc[0]
+    )
+
+
+def test_benchmark_cumulative_handles_empty_input():
+    assert risk.benchmark_cumulative(pd.DataFrame()).empty
+    assert risk.benchmark_cumulative(pd.Series(dtype=float)).empty
